@@ -59,16 +59,18 @@ end
 
 local help_message = [[
 [return] - re-run last command
-c(ontinue) - contiue execution
-s(tep) - step forward by one line (into functions)
-n(ext) - step forward by one line (skipping over functions)
-p(rint) [expression] - execute the expression and print the result
-f(inish) - step forward until exiting the current function
-u(p) - move up the stack by one frame
-d(own) - move down the stack by one frame
-t(race) - print the stack trace
-l(ocals) - print the function arguments, locals and upvalues.
-h(elp) - print this message
+
+continue    - contiue execution
+step        - step forward by one line (into functions)
+next        - step forward by one line (skipping over functions)
+print (xpr) - execute the expression and print the result
+finish      - step forward until exiting the current function
+up          - move up the stack by one frame
+down        - move down the stack by one frame
+trace       - print the stack trace
+locals      - print the function arguments, locals and upvalues.
+
+help        - print this message
 ]]
 
 -- The stack level that cmd_* functions use to access locals or info
@@ -88,7 +90,9 @@ local dbg
 -- Default dbg.read function
 local function dbg_read(prompt)
 	dbg.write(prompt)
-	return io.read()
+  local r = io.read()
+  print(string.format("NARANJO: %s", r))
+	return r
 end
 
 -- Default dbg.write function
@@ -105,9 +109,28 @@ local function dbg_writeln(str, ...)
 	dbg.write((str or "").."\n", ...)
 end
 
+-- Internal shows trace of actual line
+local function dbg_crop_trace(func_name, source, line)
+  local trace = ""
+  local count = 0
+
+  for i = 0, #source do
+    if (source:sub(i,i) == "\n") then
+      count = count + 1
+    end
+    if (count >= (line - dbg.trace_size) and (count <= (line + dbg.trace_size))) then
+      trace = trace .. source:sub(i,i)
+    end
+  end
+  return trace
+end
+
 local function format_stack_frame_info(info)
-	local fname = (info.name or string.format("<%s:%d>", info.short_src, info.linedefined))
-	return string.format(COLOR_BLUE.."%s:%d"..COLOR_RESET.." in '%s'", info.short_src, info.currentline, fname)
+  local it        = stack_offset + LOCAL_STACK_LEVEL
+  local faddress  = tostring(debug.getinfo(it).func)
+  local trace     = dbg_crop_trace(info.name, info.source, info.currentline)
+  local fname     = faddress .. trace ..(info.name or string.format("<%s:%d>", info.short_src, info.linedefined))
+	return string.format(COLOR_BLUE.."%s:%d"..COLOR_RESET.." in '%s'", info.name, info.currentline, fname)
 end
 
 local repl
@@ -215,7 +238,7 @@ local function cmd_print(expr)
 	
 	-- Call the chunk and collect the results.
 	local results = {pcall(chunk, unpack(rawget(env, "...") or {}))}
-	
+
 	-- The first result is the pcall error.
 	if not results[1] then
 		dbg.writeln(COLOR_RED.."Error:"..COLOR_RESET.." %s", results[2])
@@ -299,19 +322,68 @@ end
 
 local last_cmd = false
 
+local function add_command(table, name, func)
+  for i = 1, #name do
+    table[name[i]] = func
+  end
+end
+
+local dbg_breakpoints = {}
+
+local function dbg_check_breakpoint(id)
+  if (id == -1) then return end
+
+  local b = dbg_breakpoints[id]
+  if (b == nil) then
+    dbg_breakpoints[id] = true
+    b = true
+  end
+  return b
+end
+
+local function dbg_disable_breakpoint(id)
+  dbg_breakpoints[id] = false
+end
+
+local function dbg_enable_breakpoint(id)
+  dbg_breakpoints[id] = true
+end
+
+local function cmd_check_breakpoint(id)
+  print(dbg_breakpoints[1])
+  id = tonumber(id)
+  local t = "Breakpoint: " .. tostring(id) .. " "
+  local b = dbg_breakpoints[id]
+  if (b == nil) then 
+    dbg.writeln(t .. "Does not exists")
+  elseif (b == true) then
+    dbg.writeln(t .. "Enabled") 
+  elseif (b == false) then
+    dbg.writeln(t .. "Disabled") 
+  end
+end
+
 local function match_command(line)
-	local commands = {
-		["c"] = function() return true end,
-		["s"] = function() return true, hook_step end,
-		["n"] = function() return true, hook_next end,
-		["f"] = function() return true, hook_finish end,
-		["p%s?(.*)"] = cmd_print,
-		["u"] = cmd_up,
-		["d"] = cmd_down,
-		["t"] = cmd_trace,
-		["l"] = cmd_locals,
-		["h"] = function() dbg.writeln(help_message); return false end,
-	}
+	local commands = {}
+
+  --Breakpoints
+  add_command(commands, { "disable%s?(.*)", "bd%s?(.*)" },  dbg_disable_breakpoint)
+  add_command(commands, { "enable%s?(.*)",  "be%s?(.*)" },  dbg_enable_breakpoint)
+  add_command(commands, { "check%s?(.*)",   "bc%s?(.*)" }, cmd_check_breakpoint)
+  --
+
+  add_command(commands, { "continue", "c" }, function() return true end)
+  add_command(commands, { "step",     "s" }, function() return true, hook_step end)
+	add_command(commands, { "next",     "n" }, function() return true, hook_next end)
+	add_command(commands, { "finish",   "f" }, function() return true, hook_finish end)
+	add_command(commands, { "up",       "u" }, cmd_up)
+	add_command(commands, { "down",     "d" }, cmd_down)
+	add_command(commands, { "trace",    "t" }, cmd_trace)
+	add_command(commands, { "locals",   "l" }, cmd_locals)
+	add_command(commands, { "help",     "h" },
+              function() dbg.writeln(help_message); return false end)
+
+	add_command(commands, { "print%s?(.*)", "p%s?(.*)" }, cmd_print)
 	
 	for cmd, cmd_func in pairs(commands) do
 		local matches = {string.match(line, "^("..cmd..")$")}
@@ -349,7 +421,6 @@ end
 
 repl = function()
 	dbg.writeln(format_stack_frame_info(debug.getinfo(LOCAL_STACK_LEVEL - 3 + stack_top)))
-	
 	repeat
 		local success, done, hook = pcall(run_command, dbg.read(COLOR_RED.."debugger.lua> "..COLOR_RESET))
 		if success then
@@ -364,15 +435,18 @@ end
 
 -- Make the debugger object callable like a function.
 dbg = setmetatable({}, {
-	__call = function(self, condition, offset)
-		if condition then return end
-		
-		offset = (offset or 0)
-		stack_offset = offset
-		stack_top = offset
-		
-		debug.sethook(hook_next(1), "crl")
-		return
+	__call = function(self, id, condition, offset)
+
+    if condition then return end
+
+    if ((id and dbg_check_breakpoint(id)) or (not id)) then
+      print "LLEGA" 
+      offset = (offset or 0)
+      stack_offset = offset
+      stack_top = offset
+      debug.sethook(hook_next(1), "crl")
+      return
+    end
 	end,
 })
 
@@ -381,6 +455,12 @@ dbg.read = dbg_read
 dbg.write = dbg_write
 dbg.writeln = dbg_writeln
 dbg.pretty = pretty
+dbg.trace_size = 10
+
+function dbg.stop(level)
+	level = level or 1
+  dbg(false, level)
+end
 
 -- Works like error(), but invokes the debugger.
 function dbg.error(err, level)
