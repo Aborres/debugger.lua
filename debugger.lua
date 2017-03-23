@@ -1,5 +1,6 @@
 --[[
 	Copyright (c) 2016 Scott Lembcke and Howling Moon Software
+	Copyright (c) 2017 Fork Modifications Jose M. Naranjo
 	
 	Permission is hereby granted, free of charge, to any person obtaining a copy
 	of this software and associated documentation files (the "Software"), to deal
@@ -26,10 +27,21 @@
 ]]
 
 
+--[[
+  Basic Usage:
+    dbg()   -> breaks actual execution
+    dbg(id) -> breaks actual execution and gives this breakpoint an identifier
+    dbg(id, condition) -> "Assert" with identifier
+    use -(h)elp for extra info
+]]
+
+
 -- Use ANSI color codes in the prompt by default.
 local COLOR_RED = ""
 local COLOR_BLUE = ""
 local COLOR_RESET = ""
+
+dbg_default_writer = io.write
 
 local function pretty(obj, recurse)
 	-- Returns true if a table has a __tostring metamethod.
@@ -91,16 +103,15 @@ local dbg
 local function dbg_read(prompt)
 	dbg.write(prompt)
   local r = io.read()
-  print(string.format("NARANJO: %s", r))
 	return r
 end
 
 -- Default dbg.write function
 local function dbg_write(str, ...)
 	if select("#", ...) == 0 then
-		io.write(str or "<NULL>")
+		dbg_default_writer(str or "<NULL>")
 	else
-		io.write(string.format(str, ...))
+		dbg_default_writer(string.format(str, ...))
 	end
 end
 
@@ -342,15 +353,16 @@ local function dbg_check_breakpoint(id)
 end
 
 local function dbg_disable_breakpoint(id)
+  id = tonumber(id)
   dbg_breakpoints[id] = false
 end
 
 local function dbg_enable_breakpoint(id)
+  id = tonumber(id)
   dbg_breakpoints[id] = true
 end
 
 local function cmd_check_breakpoint(id)
-  print(dbg_breakpoints[1])
   id = tonumber(id)
   local t = "Breakpoint: " .. tostring(id) .. " "
   local b = dbg_breakpoints[id]
@@ -433,14 +445,16 @@ repl = function()
 	until done
 end
 
--- Make the debugger object callable like a function.
-dbg = setmetatable({}, {
+-- Stops the Actual execution
+-- @param id        Identifier for actual breakpoint
+-- @param condition "Assert Mode"
+-- @param offset    stack offset to stop
+dbg = setmetatable({}, { -- Make the debugger object callable like a function.
 	__call = function(self, id, condition, offset)
 
     if condition then return end
 
     if ((id and dbg_check_breakpoint(id)) or (not id)) then
-      print "LLEGA" 
       offset = (offset or 0)
       stack_offset = offset
       stack_top = offset
